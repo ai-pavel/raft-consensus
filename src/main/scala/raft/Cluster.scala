@@ -79,6 +79,7 @@ object Cluster:
             context.log.info(s"Restarted node $nodeId")
           Behaviors.same
       }
+    }
 
   /**
    * Convenience: create and start a cluster ActorSystem.
