@@ -30,23 +30,23 @@ object Cli:
   /** Format a client response for display. */
   def formatResponse(cmd: CliCommand, resp: RaftMessage.ClientResponse, leaderId: String): String =
     (cmd, resp) match
-      case (PutCmd(key, value), RaftMessage.ClientOk(_)) =>
+      case (CliCommand.PutCmd(key, value), RaftMessage.ClientOk(_)) =>
         s"  OK: $key = $value (via leader $leaderId)"
-      case (PutCmd(_, _), RaftMessage.ClientRedirect(leader)) =>
+      case (CliCommand.PutCmd(_, _), RaftMessage.ClientRedirect(leader)) =>
         s"  Redirected to $leader"
-      case (PutCmd(_, _), RaftMessage.ClientError(msg)) =>
+      case (CliCommand.PutCmd(_, _), RaftMessage.ClientError(msg)) =>
         s"  Error: $msg"
-      case (GetCmd(key), RaftMessage.ClientOk(Some(v))) =>
+      case (CliCommand.GetCmd(key), RaftMessage.ClientOk(Some(v))) =>
         s"  $key = $v"
-      case (GetCmd(key), RaftMessage.ClientOk(None)) =>
+      case (CliCommand.GetCmd(key), RaftMessage.ClientOk(None)) =>
         s"  $key not found"
-      case (GetCmd(_), RaftMessage.ClientRedirect(leader)) =>
+      case (CliCommand.GetCmd(_), RaftMessage.ClientRedirect(leader)) =>
         s"  Redirected to $leader"
-      case (GetCmd(_), RaftMessage.ClientError(msg)) =>
+      case (CliCommand.GetCmd(_), RaftMessage.ClientError(msg)) =>
         s"  Error: $msg"
-      case (DeleteCmd(key), RaftMessage.ClientOk(_)) =>
+      case (CliCommand.DeleteCmd(key), RaftMessage.ClientOk(_)) =>
         s"  OK: deleted $key (via leader $leaderId)"
-      case (DeleteCmd(_), other) =>
+      case (CliCommand.DeleteCmd(_), other) =>
         s"  $other"
       case _ => ""
 
