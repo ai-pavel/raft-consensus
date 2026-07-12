@@ -1,7 +1,7 @@
 # Raft Consensus
 
-[![CI](https://github.com/ai-pavel/raft-consensus/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-pavel/raft-consensus/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/ai-pavel/raft-consensus/branch/main/graph/badge.svg)](https://codecov.io/gh/ai-pavel/raft-consensus)
+[![CI](https://github.com/ai-pavel/parliament/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-pavel/parliament/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/ai-pavel/parliament/branch/main/graph/badge.svg)](https://codecov.io/gh/ai-pavel/parliament)
 
 A Scala 3 implementation of the Raft consensus protocol using Akka actors.
 
