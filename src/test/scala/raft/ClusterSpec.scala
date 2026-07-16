@@ -89,4 +89,41 @@ class ClusterSpec extends AnyWordSpec with Matchers with BeforeAndAfterAll:
       finally
         system.terminate()
     }
+
+    "findLeader returns None when no leader has been elected" in {
+      val system = Cluster.startSystem(3)
+      try
+        import org.apache.pekko.actor.typed.scaladsl.AskPattern.*
+        import scala.concurrent.{Await, ExecutionContext}
+        given ExecutionContext = system.executionContext
+        given org.apache.pekko.actor.typed.ActorSystem[?] = system
+        val nodesResp = Await.result(
+          system.ask[NodesResponse](r => ClusterCommand.GetNodes(r)),
+          3.seconds
+        )
+        // Immediately after start, no leader has been elected yet.
+        val leader = Cluster.findLeader(nodesResp.nodes)
+        leader shouldBe None
+      finally
+        system.terminate()
+    }
+
+    "findLeader returns Some after a leader is elected" in {
+      val system = Cluster.startSystem(3)
+      try
+        import org.apache.pekko.actor.typed.scaladsl.AskPattern.*
+        import scala.concurrent.{Await, ExecutionContext}
+        given ExecutionContext = system.executionContext
+        given org.apache.pekko.actor.typed.ActorSystem[?] = system
+        // Wait for election to occur.
+        Thread.sleep(1500)
+        val nodesResp = Await.result(
+          system.ask[NodesResponse](r => ClusterCommand.GetNodes(r)),
+          3.seconds
+        )
+        val leader = Cluster.findLeader(nodesResp.nodes)
+        leader shouldBe defined
+      finally
+        system.terminate()
+    }
   }

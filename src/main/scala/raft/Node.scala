@@ -265,7 +265,7 @@ object Node:
           val snapshotOffset = state.snapshot.map(_.lastIncludedIndex).getOrElse(0)
           val newNext = math.max(prevNext - 1, snapshotOffset + 1)
 
-          if newNext <= snapshotOffset then
+          if prevNext - 1 <= snapshotOffset then
             // Follower is too far behind; send snapshot
             state.snapshot.foreach { snap =>
               peers.get(aer.followerId).foreach { ref =>

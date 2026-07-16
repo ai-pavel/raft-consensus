@@ -88,6 +88,39 @@ class CoverageSpec extends AnyWordSpec with Matchers with BeforeAndAfterAll:
       val state = stateProbe.receiveMessage(3.seconds)
       state.role shouldBe Role.Leader
     }
+
+    "not compact when log exceeds threshold but commitIndex is 0" in {
+      val leader = testKit.spawn(Node("nocompact-0-leader"))
+      val peer1 = testKit.createTestProbe[RaftMessage]()
+      val peer2 = testKit.createTestProbe[RaftMessage]()
+      val stateProbe = testKit.createTestProbe[RaftMessage.NodeStateResponse]()
+
+      leader ! RaftMessage.SetPeers(Map("p1" -> peer1.ref, "p2" -> peer2.ref))
+      leader ! RaftMessage.ElectionTimeout
+      peer1.receiveMessage(3.seconds)
+      peer2.receiveMessage(3.seconds)
+      leader ! RaftMessage.RequestVoteResult(term = 1, voteGranted = true, voterId = "p1")
+      leader ! RaftMessage.RequestVoteResult(term = 1, voteGranted = true, voterId = "p2")
+      peer1.receiveMessage(3.seconds)
+      peer2.receiveMessage(3.seconds)
+
+      // Append 60 entries WITHOUT acknowledging any — commitIndex stays at 0.
+      for i <- 2 to 60 do
+        val cp = testKit.createTestProbe[RaftMessage.ClientResponse]()
+        leader ! RaftMessage.ClientRequest(Command.Put(s"k$i", s"v$i"), cp.ref)
+        // Consume the AppendEntries sent to peers but never acknowledge.
+        peer1.receiveMessage(1.second)
+        peer2.receiveMessage(1.second)
+
+      // Log is now 60 entries (exceeds threshold 50) but commitIndex is 0.
+      leader ! RaftMessage.CompactionTick
+
+      // Leader should still be alive and log uncompacted.
+      leader ! RaftMessage.GetState(stateProbe.ref)
+      val state = stateProbe.receiveMessage(3.seconds)
+      state.role shouldBe Role.Leader
+      state.commitIndex shouldBe 0
+    }
   }
 
   "A Raft Node leader append result handling" should {
@@ -269,6 +302,105 @@ class CoverageSpec extends AnyWordSpec with Matchers with BeforeAndAfterAll:
 
       // Verify leader is still alive
       val stateProbe = testKit.createTestProbe[RaftMessage.NodeStateResponse]()
+      leader ! RaftMessage.GetState(stateProbe.ref)
+      val state = stateProbe.receiveMessage(3.seconds)
+      state.role shouldBe Role.Leader
+    }
+
+    "send an InstallSnapshot message when follower nextIndex drops to snapshot offset" in {
+      // Directly exercise the snapshot-send branch by building a snapshot on the leader
+      // then forcing a follower's nextIndex below the snapshot offset.
+      val leader = testKit.spawn(Node("snap-send-direct"))
+      val peer1 = testKit.createTestProbe[RaftMessage]()
+      val peer2 = testKit.createTestProbe[RaftMessage]()
+
+      leader ! RaftMessage.SetPeers(Map("p1" -> peer1.ref, "p2" -> peer2.ref))
+      leader ! RaftMessage.ElectionTimeout
+      peer1.receiveMessage(3.seconds)
+      peer2.receiveMessage(3.seconds)
+      leader ! RaftMessage.RequestVoteResult(term = 1, voteGranted = true, voterId = "p1")
+      leader ! RaftMessage.RequestVoteResult(term = 1, voteGranted = true, voterId = "p2")
+      peer1.receiveMessage(3.seconds)
+      peer2.receiveMessage(3.seconds)
+
+      // Acknowledge the noop entry (index 1) so commitIndex advances.
+      leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p1", matchIndex = 1)
+      leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p2", matchIndex = 1)
+
+      // Append and commit enough entries to trigger compaction (threshold = 50).
+      for i <- 2 to 56 do
+        val cp = testKit.createTestProbe[RaftMessage.ClientResponse]()
+        leader ! RaftMessage.ClientRequest(Command.Put(s"k$i", s"v$i"), cp.ref)
+        val ae1 = peer1.receiveMessage(3.seconds).asInstanceOf[RaftMessage.AppendEntries]
+        val ae2 = peer2.receiveMessage(3.seconds).asInstanceOf[RaftMessage.AppendEntries]
+        leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p1", matchIndex = ae1.entries.last.index)
+        leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p2", matchIndex = ae2.entries.last.index)
+        cp.receiveMessage(5.seconds)
+
+      // Compact — creates a snapshot up to commitIndex (56).
+      leader ! RaftMessage.CompactionTick
+
+      // Now p1's nextIndex is 57. Send a failure to decrement it.
+      // After enough failures it falls to the snapshot offset (56) and triggers InstallSnapshot.
+      leader ! RaftMessage.AppendEntriesResult(term = 1, success = false, followerId = "p1", matchIndex = 0)
+
+      // peer1 should receive an InstallSnapshot (not an AppendEntries)
+      val msg = peer1.receiveMessage(3.seconds)
+      msg shouldBe a[RaftMessage.InstallSnapshot]
+    }
+
+    "step down when receiving InstallSnapshot with higher term" in {
+      val follower = testKit.spawn(Node("snap-stepdown-higher"))
+      val probe = testKit.createTestProbe[RaftMessage]()
+      val stateProbe = testKit.createTestProbe[RaftMessage.NodeStateResponse]()
+
+      // Follower starts at term 0. Send InstallSnapshot with term 5.
+      val snap = Snapshot(3, 2, Map("x" -> "snap"))
+      follower ! RaftMessage.InstallSnapshot(term = 5, leaderId = "new-leader", snapshot = snap, replyTo = probe.ref)
+      val result = probe.receiveMessage(3.seconds).asInstanceOf[RaftMessage.InstallSnapshotResult]
+      result.term shouldBe 5
+
+      follower ! RaftMessage.GetState(stateProbe.ref)
+      val state = stateProbe.receiveMessage(3.seconds)
+      state.term shouldBe 5
+      state.role shouldBe Role.Follower
+      state.stateMachine shouldBe Map("x" -> "snap")
+    }
+
+    "update nextIndex/matchIndex via InstallSnapshotResult when leader has a snapshot" in {
+      val leader = testKit.spawn(Node("snap-result-with-snap"))
+      val peer1 = testKit.createTestProbe[RaftMessage]()
+      val peer2 = testKit.createTestProbe[RaftMessage]()
+      val stateProbe = testKit.createTestProbe[RaftMessage.NodeStateResponse]()
+
+      leader ! RaftMessage.SetPeers(Map("p1" -> peer1.ref, "p2" -> peer2.ref))
+      leader ! RaftMessage.ElectionTimeout
+      peer1.receiveMessage(3.seconds)
+      peer2.receiveMessage(3.seconds)
+      leader ! RaftMessage.RequestVoteResult(term = 1, voteGranted = true, voterId = "p1")
+      leader ! RaftMessage.RequestVoteResult(term = 1, voteGranted = true, voterId = "p2")
+      peer1.receiveMessage(3.seconds)
+      peer2.receiveMessage(3.seconds)
+
+      // Acknowledge the noop so commitIndex advances.
+      leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p1", matchIndex = 1)
+      leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p2", matchIndex = 1)
+
+      // Append and commit 55 entries, then compact to create a snapshot.
+      for i <- 2 to 56 do
+        val cp = testKit.createTestProbe[RaftMessage.ClientResponse]()
+        leader ! RaftMessage.ClientRequest(Command.Put(s"k$i", s"v$i"), cp.ref)
+        val ae1 = peer1.receiveMessage(3.seconds).asInstanceOf[RaftMessage.AppendEntries]
+        val ae2 = peer2.receiveMessage(3.seconds).asInstanceOf[RaftMessage.AppendEntries]
+        leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p1", matchIndex = ae1.entries.last.index)
+        leader ! RaftMessage.AppendEntriesResult(term = 1, success = true, followerId = "p2", matchIndex = ae2.entries.last.index)
+        cp.receiveMessage(5.seconds)
+
+      leader ! RaftMessage.CompactionTick
+
+      // Now send an InstallSnapshotResult — leader should update matchIndex/nextIndex.
+      leader ! RaftMessage.InstallSnapshotResult(term = 1, followerId = "p1")
+
       leader ! RaftMessage.GetState(stateProbe.ref)
       val state = stateProbe.receiveMessage(3.seconds)
       state.role shouldBe Role.Leader
